@@ -10,7 +10,7 @@
  * 폰트 매핑
  *   기본 UI 전부            = Pretendard
  *   백시현 일기·편지 본문   = Kim jung chul Script
- *   이안 일기·편지 본문     = 송암 이형식
+ *   이안 일기·편지 본문     = Nanum MiRaeNaMu
  *   차태윤 일기·편지 본문   = Griun OMIRI
  *   ⓤ 일기·편지 본문       = Nanum BugGeugSeong
  */
@@ -34,6 +34,7 @@ const RENAME = [
   ["retendard-Regular", "WNF Pretendard", "Regular", "regular"],
   ["retendard-Bold", "WNF Pretendard", "Bold", "bold"],
   ["KimjungchulScript", "WNF Sihyun Script", "Regular", "regular"],
+  ["NanumMiRaeNaMu", "WNF Ian Script", "Regular", "regular"],
   ["songam_leehyungsik", "WNF Ian Script", "Regular", "regular"],
   ["Griun_OMIRI", "WNF Taeyun Script", "Regular", "regular"],
   ["NanumBugGeugSeong", "WNF User Script", "Regular", "regular"],
@@ -74,15 +75,26 @@ const UI = "'WNF Pretendard','Pretendard'";
 const HAND = {
   "0": "'WNF User Script','Nanum BugGeugSeong'",
   "1": "'WNF Sihyun Script','Kim jung chul Script'",
-  "2": "'WNF Ian Script','송암 이형식'",
+  "2": "'WNF Ian Script','Nanum MiRaeNaMu'",
   "3": "'WNF Taeyun Script','Griun OMIRI'",
+};
+
+/* 원본 파일 지문(md5 앞 8자리). 업로드가 깨졌는지 스스로 비교한다. */
+const FONT_MD5 = {
+  "Pretendard-Regular.otf": "84c0ea9d",
+  "Pretendard-Bold.otf": "f8a9b842",
+  "KimjungchulScript-Regular.ttf": "11b7a088",
+  "NanumMiRaeNaMu.ttf": "951dc206",
+  "songam_leehyungsik.ttf": "e5bc7cf4",
+  "Griun_OMIRI-Rg.ttf": "eab8595e",
+  "NanumBugGeugSeong.ttf": "d99597f1",
 };
 
 const FONT_FILES = {
   "Pretendard Regular": ["Pretendard-Regular.otf", "pretendard-Regular.otf"],
   "Pretendard Bold": ["Pretendard-Bold.otf", "pretendard-Bold.otf"],
   "백시현 필체": ["KimjungchulScript-Regular.ttf"],
-  "이안 필체": ["songam_leehyungsik.ttf"],
+  "이안 필체": ["NanumMiRaeNaMu.ttf", "songam_leehyungsik.ttf"],
   "차태윤 필체": ["Griun_OMIRI-Rg.ttf"],
   "ⓤ 필체": ["NanumBugGeugSeong.ttf"],
 };
@@ -100,7 +112,11 @@ function findFont(names) {
         }
         const md5 = require("crypto").createHash("md5")
           .update(fs.readFileSync(full)).digest("hex").slice(0, 8);
-        return { name, dir, status: "ready", bytes: stat.size, md5 };
+        const want = FONT_MD5[name];
+        return {
+          name, dir, status: "ready", bytes: stat.size, md5,
+          지문: !want ? "확인불가" : (want === md5 ? "원본과 일치" : "원본과 다름(재업로드 필요)"),
+        };
       } catch (e) { /* 다음 후보 */ }
     }
   }
@@ -174,7 +190,7 @@ function retag(svg, hand) {
     const v = String(value);
     /* 워커가 이미 캐릭터를 지목해 보낸 경우 — 그대로 존중한다. */
     if (/WNF Sihyun|Kim ?jung ?chul/i.test(v)) return HAND["1"];
-    if (/WNF Ian|송암/i.test(v)) return HAND["2"];
+    if (/WNF Ian|MiRaeNaMu|미래나무|송암/i.test(v)) return HAND["2"];
     if (/WNF Taeyun|Griun/i.test(v)) return HAND["3"];
     if (/WNF User|BugGeugSeong|북극성/i.test(v)) return HAND["0"];
     /* 편지의 To.·from. 처럼 명조 계열로 남은 자리 = 그 편지 주인의 필체 */
@@ -190,6 +206,32 @@ function retag(svg, hand) {
 module.exports = async (req, res) => {
   try {
     const u = String((req.query && req.query.u) || "");
+
+    /* ?sheet=1 : 5종 글꼴 견본을 한 장의 PNG로. JSON 읽지 않고 눈으로 바로 비교한다.
+     * 어느 줄이 기본 Pretendard와 똑같아 보이면 그 폰트가 안 먹은 것이다. */
+    if (req.query && req.query.sheet) {
+      const rows = [
+        ["기본 Pretendard", "WNF Pretendard"],
+        ["백시현", "WNF Sihyun Script"],
+        ["이안", "WNF Ian Script"],
+        ["차태윤", "WNF Taeyun Script"],
+        ["{user}", "WNF User Script"],
+      ];
+      const H = 62 * rows.length + 20;
+      let g = '<rect width="620" height="' + H + '" fill="#fff"/>';
+      rows.forEach(([label, family], i) => {
+        const y = 20 + i * 62;
+        g += '<text x="20" y="' + (y + 34) + '" font-size="15" font-family="WNF Pretendard" fill="#8a8a8a">' + label.replace(/[<>&]/g, "") + '</text>'
+          + '<text x="150" y="' + (y + 38) + '" font-size="27" font-family="' + family + '" fill="#111">다람쥐 헌 쳇바퀴 Aa 123</text>'
+          + '<line x1="20" y1="' + (y + 58) + '" x2="600" y2="' + (y + 58) + '" stroke="#eee"/>';
+      });
+      const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="620" height="' + H + '">' + g + '</svg>';
+      const png = await sharp(Buffer.from(svg), { density: 192 }).png().toBuffer();
+      res.setHeader("Content-Type", "image/png");
+      res.setHeader("Cache-Control", "no-store");
+      res.status(200).send(png);
+      return;
+    }
 
     /* ?check=1 : 실제로 렌더해서 각 폰트가 '살아 있는지'를 판정한다.
      * 없는 패밀리로 그린 결과와 픽셀이 같으면 그 폰트는 적용되지 않은 것. */

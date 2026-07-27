@@ -3,7 +3,7 @@
 - Pretendard-Regular.otf
 - Pretendard-Bold.otf
 - KimjungchulScript-Regular.ttf   (백시현 필체)
-- songam_leehyungsik.ttf          (이안 필체)
+- NanumMiRaeNaMu.ttf              (이안 필체)
 - Griun_OMIRI-Rg.ttf              (차태윤 필체)
 - NanumBugGeugSeong.ttf           (ⓤ 필체)
 

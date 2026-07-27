@@ -18,10 +18,51 @@
 const path = require("path");
 const fs = require("fs");
 
-/* sharp가 처음 로드되기 전에 지정해야 한다. */
+/* ── 폰트 로딩 ────────────────────────────────────────────────
+ * 저장소의 fonts.conf 를 그대로 쓰지 않고, 부팅 시 /tmp 에 '절대경로'
+ * 설정 파일을 새로 만들어 쓴다. prefix="relative" / prefix="cwd" 같은
+ * 상대경로 해석은 fontconfig 빌드 버전에 따라 무시되는 경우가 있어,
+ * 폰트가 분명히 있는데도 스캔이 안 되는 사고가 난다. 절대경로면 그럴 일이 없다.
+ * (sharp를 require 하기 전에 끝내야 한다) */
 const FONT_DIR = path.join(process.cwd(), "fontconfig");
+const FONT_DIRS = [FONT_DIR, path.join(process.cwd(), "fonts")].filter((d) => {
+  try { return fs.statSync(d).isDirectory(); } catch (e) { return false; }
+});
+
+/* 파일명 → 고정 패밀리명. 파일 내부 이름이 무엇이든 이 이름으로 등록된다. */
+const RENAME = [
+  ["retendard-Regular", "WNF Pretendard", "Regular", "regular"],
+  ["retendard-Bold", "WNF Pretendard", "Bold", "bold"],
+  ["KimjungchulScript", "WNF Sihyun Script", "Regular", "regular"],
+  ["songam_leehyungsik", "WNF Ian Script", "Regular", "regular"],
+  ["Griun_OMIRI", "WNF Taeyun Script", "Regular", "regular"],
+  ["NanumBugGeugSeong", "WNF User Script", "Regular", "regular"],
+];
+
+const GENERATED_CONF = "/tmp/wnf-fonts.conf";
+function buildFontConf() {
+  const dirs = FONT_DIRS.map((d) => "<dir>" + d + "</dir>").join("");
+  const rules = RENAME.map(([file, family, style, weight]) =>
+    '<match target="scan">'
+    + '<test name="file" compare="contains"><string>' + file + "</string></test>"
+    + '<edit name="family" mode="assign_replace"><string>' + family + "</string></edit>"
+    + '<edit name="style" mode="assign_replace"><string>' + style + "</string></edit>"
+    + '<edit name="weight" mode="assign_replace"><const>' + weight + "</const></edit>"
+    + "</match>").join("");
+  const xml = '<?xml version="1.0"?><fontconfig>'
+    + '<include ignore_missing="yes">/etc/fonts/fonts.conf</include>'
+    + dirs + "<cachedir>/tmp/wnf-fontcache</cachedir>" + rules + "</fontconfig>";
+  fs.writeFileSync(GENERATED_CONF, xml);
+  return xml;
+}
+
+let confError = "";
+try { buildFontConf(); process.env.FONTCONFIG_FILE = GENERATED_CONF; }
+catch (e) {                                    // /tmp 쓰기 실패 시 저장소 설정으로 폴백
+  confError = String(e && e.message);
+  process.env.FONTCONFIG_FILE = path.join(FONT_DIR, "fonts.conf");
+}
 process.env.FONTCONFIG_PATH = FONT_DIR;
-process.env.FONTCONFIG_FILE = path.join(FONT_DIR, "fonts.conf");
 process.env.XDG_CACHE_HOME = process.env.XDG_CACHE_HOME || "/tmp";
 process.env.PANGOCAIRO_BACKEND = process.env.PANGOCAIRO_BACKEND || "fontconfig";
 
@@ -46,9 +87,6 @@ const FONT_FILES = {
   "ⓤ 필체": ["NanumBugGeugSeong.ttf"],
 };
 
-/* 폰트를 fontconfig/ 또는 fonts/ 어느 쪽에 넣어도 찾는다. */
-const FONT_DIRS = [FONT_DIR, path.join(process.cwd(), "fonts")];
-
 function findFont(names) {
   for (const dir of FONT_DIRS) {
     for (const name of names) {
@@ -60,7 +98,9 @@ function findFont(names) {
         if (head.startsWith("version https://git-lfs.github.com")) {
           return { name, dir, status: "git_lfs_pointer", bytes: stat.size };
         }
-        return { name, dir, status: "ready", bytes: stat.size };
+        const md5 = require("crypto").createHash("md5")
+          .update(fs.readFileSync(full)).digest("hex").slice(0, 8);
+        return { name, dir, status: "ready", bytes: stat.size, md5 };
       } catch (e) { /* 다음 후보 */ }
     }
   }
@@ -150,6 +190,40 @@ function retag(svg, hand) {
 module.exports = async (req, res) => {
   try {
     const u = String((req.query && req.query.u) || "");
+
+    /* ?check=1 : 실제로 렌더해서 각 폰트가 '살아 있는지'를 판정한다.
+     * 없는 패밀리로 그린 결과와 픽셀이 같으면 그 폰트는 적용되지 않은 것. */
+    if (req.query && req.query.check) {
+      const draw = async (family) => {
+        const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="300" height="46">'
+          + '<rect width="300" height="46" fill="#fff"/>'
+          + '<text x="8" y="34" font-size="26" font-family="' + family + '" fill="#000">한글 필체 Aa</text></svg>';
+        const buf = await sharp(Buffer.from(svg), { density: 144 }).png().toBuffer();
+        return require("crypto").createHash("md5").update(buf).digest("hex").slice(0, 10);
+      };
+      const base = await draw("절대없는폰트이름ZZ");
+      const probes = {};
+      for (const [label, family] of [
+        ["Pretendard(기본)", "WNF Pretendard"],
+        ["백시현 필체", "WNF Sihyun Script"],
+        ["이안 필체", "WNF Ian Script"],
+        ["차태윤 필체", "WNF Taeyun Script"],
+        ["ⓤ 필체", "WNF User Script"],
+      ]) {
+        const h = await draw(family);
+        probes[label] = h === base ? "미적용(폴백됨)" : "적용됨";
+      }
+      res.setHeader("Content-Type", "application/json; charset=utf-8");
+      res.setHeader("Cache-Control", "no-store");
+      res.status(200).send(JSON.stringify({
+        판정: probes,
+        폰트설정파일: process.env.FONTCONFIG_FILE,
+        설정생성오류: confError || null,
+        폰트폴더: FONT_DIRS,
+        파일점검: inventory(),
+      }, null, 2));
+      return;
+    }
 
     /* u 없이 열면 진단 정보 — 폰트가 실제로 배포에 실렸는지 여기서 확인한다. */
     if (!u) {

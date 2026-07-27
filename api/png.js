@@ -9,7 +9,7 @@
  *
  * 폰트 매핑
  *   기본 UI 전부            = Pretendard
- *   백시현 일기·편지 본문   = Kim jung chul Script
+ *   백시현 일기·편지 본문   = Nanum YeorIrCe (나눔손글씨 열일체)
  *   이안 일기·편지 본문     = Nanum MiRaeNaMu
  *   차태윤 일기·편지 본문   = Griun OMIRI
  *   ⓤ 일기·편지 본문       = Nanum BugGeugSeong
@@ -33,7 +33,7 @@ const FONT_DIRS = [FONT_DIR, path.join(process.cwd(), "fonts")].filter((d) => {
 const RENAME = [
   ["retendard-Regular", "WNF Pretendard", "Regular", "regular"],
   ["retendard-Bold", "WNF Pretendard", "Bold", "bold"],
-  ["KimjungchulScript", "WNF Sihyun Script", "Regular", "regular"],
+  ["NanumYeorIrCe", "WNF Sihyun Script", "Regular", "regular"],
   ["NanumMiRaeNaMu", "WNF Ian Script", "Regular", "regular"],
   ["songam_leehyungsik", "WNF Ian Script", "Regular", "regular"],
   ["Griun_OMIRI", "WNF Taeyun Script", "Regular", "regular"],
@@ -83,7 +83,7 @@ const HAND = {
 const FONT_MD5 = {
   "Pretendard-Regular.otf": "84c0ea9d",
   "Pretendard-Bold.otf": "f8a9b842",
-  "KimjungchulScript-Regular.ttf": "11b7a088",
+  "NanumYeorIrCe.ttf": "991703d8",
   "NanumMiRaeNaMu.ttf": "951dc206",
   "songam_leehyungsik.ttf": "e5bc7cf4",
   "Griun_OMIRI-Rg.ttf": "eab8595e",
@@ -93,7 +93,7 @@ const FONT_MD5 = {
 const FONT_FILES = {
   "Pretendard Regular": ["Pretendard-Regular.otf", "pretendard-Regular.otf"],
   "Pretendard Bold": ["Pretendard-Bold.otf", "pretendard-Bold.otf"],
-  "백시현 필체": ["KimjungchulScript-Regular.ttf"],
+  "백시현 필체": ["NanumYeorIrCe.ttf"],
   "이안 필체": ["NanumMiRaeNaMu.ttf", "songam_leehyungsik.ttf"],
   "차태윤 필체": ["Griun_OMIRI-Rg.ttf"],
   "ⓤ 필체": ["NanumBugGeugSeong.ttf"],
@@ -189,7 +189,7 @@ function retag(svg, hand) {
   const decide = (value) => {
     const v = String(value);
     /* 워커가 이미 캐릭터를 지목해 보낸 경우 — 그대로 존중한다. */
-    if (/WNF Sihyun|Kim ?jung ?chul/i.test(v)) return HAND["1"];
+    if (/WNF Sihyun|YeorIr|열일/i.test(v)) return HAND["1"];
     if (/WNF Ian|MiRaeNaMu|미래나무|송암/i.test(v)) return HAND["2"];
     if (/WNF Taeyun|Griun/i.test(v)) return HAND["3"];
     if (/WNF User|BugGeugSeong|북극성/i.test(v)) return HAND["0"];

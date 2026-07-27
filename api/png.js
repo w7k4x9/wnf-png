@@ -12,7 +12,7 @@
  *   백시현 일기·편지 본문   = Kim jung chul Script
  *   이안 일기·편지 본문     = 송암 이형식
  *   차태윤 일기·편지 본문   = Griun OMIRI
- *   ⓤ 일기·편지 본문       = Pretendard
+ *   ⓤ 일기·편지 본문       = Nanum BugGeugSeong
  */
 
 const path = require("path");
@@ -31,6 +31,7 @@ const sharp = require("sharp");
  * 재명명이 걸리든 안 걸리든 둘 중 하나로 잡히도록 스택으로 쓴다. */
 const UI = "'WNF Pretendard','Pretendard'";
 const HAND = {
+  "0": "'WNF User Script','Nanum BugGeugSeong'",
   "1": "'WNF Sihyun Script','Kim jung chul Script'",
   "2": "'WNF Ian Script','송암 이형식'",
   "3": "'WNF Taeyun Script','Griun OMIRI'",
@@ -42,6 +43,7 @@ const FONT_FILES = {
   "백시현 필체": ["KimjungchulScript-Regular.ttf"],
   "이안 필체": ["songam_leehyungsik.ttf"],
   "차태윤 필체": ["Griun_OMIRI-Rg.ttf"],
+  "ⓤ 필체": ["NanumBugGeugSeong.ttf"],
 };
 
 /* 폰트를 fontconfig/ 또는 fonts/ 어느 쪽에 넣어도 찾는다. */
@@ -112,7 +114,14 @@ function pickHand(u) {
   }
   /* 편지는 발신인을 못 찾으면 수신인(t) 기준으로 종이 테마가 정해지므로 같이 본다. */
   if (!code && isLetter) code = nameToCode(q.get("t") || "");
-  if (q.get("c") === "0" || q.get("uname")) code = "";   // ⓤ 본인 = 기본 폰트
+  /* 경로·발신인에 캐릭터가 아닌 이름이 붙어 있으면 그 글의 주인은 ⓤ다.
+   *   /일기민서, /편지민서?t=시현, c=0, uname=...
+   * 편지는 수신인으로 종이 테마가 정해지므로, 그 판정보다 이쪽이 우선한다. */
+  const writtenBy = String(
+    seg.trim() || q.get("w") || q.get("from") || q.get("sender") || q.get("author") || ""
+  ).trim();
+  if (writtenBy && !nameToCode(writtenBy)) code = "0";
+  if (q.get("c") === "0" || q.get("uname")) code = "0";
 
   return { hand: HAND[code] || "", kind: isDiary ? "diary" : "letter" };
 }
@@ -127,6 +136,7 @@ function retag(svg, hand) {
     if (/WNF Sihyun|Kim ?jung ?chul/i.test(v)) return HAND["1"];
     if (/WNF Ian|송암/i.test(v)) return HAND["2"];
     if (/WNF Taeyun|Griun/i.test(v)) return HAND["3"];
+    if (/WNF User|BugGeugSeong|북극성/i.test(v)) return HAND["0"];
     /* 편지의 To.·from. 처럼 명조 계열로 남은 자리 = 그 편지 주인의 필체 */
     if (hand && /batang|myungjo|(^|[^-])serif/i.test(v) && !/sans-serif/i.test(v)) return hand;
     return UI;

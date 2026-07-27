@@ -1,10 +1,11 @@
-이 폴더(fontconfig/)에 아래 폰트 파일 5개를 넣으세요. fonts/ 폴더에 넣어도 동작합니다.
+이 폴더(fontconfig/)에 아래 폰트 파일 6개를 넣으세요. fonts/ 폴더에 넣어도 동작합니다.
 
 - Pretendard-Regular.otf
 - Pretendard-Bold.otf
 - KimjungchulScript-Regular.ttf   (백시현 필체)
 - songam_leehyungsik.ttf          (이안 필체)
 - Griun_OMIRI-Rg.ttf              (차태윤 필체)
+- NanumBugGeugSeong.ttf           (ⓤ 필체)
 
 확인 방법: 배포 후 https://<도메인>/api/png 를 열면 fonts 항목이 전부 "ready" 여야 합니다.
 "missing" 이면 vercel.json 의 includeFiles 가 빠졌거나 폴더 위치가 다른 것입니다.

@@ -1,13 +1,10 @@
-이 폴더에 아래 폰트 파일을 넣으세요. 폰트 파일 자체는 이 배포본에 포함되어 있지 않습니다.
+이 폴더(fontconfig/)에 아래 폰트 파일 5개를 넣으세요. fonts/ 폴더에 넣어도 동작합니다.
 
-필수 파일:
-- Pretendard-Regular.otf 또는 pretendard-Regular.otf
-- Pretendard-Bold.otf 또는 pretendard-Bold.otf
-- songam_leehyungsik.ttf
-- KimjungchulScript-Regular.ttf
-- Griun_OMIRI-Rg.ttf
+- Pretendard-Regular.otf
+- Pretendard-Bold.otf
+- KimjungchulScript-Regular.ttf   (백시현 필체)
+- songam_leehyungsik.ttf          (이안 필체)
+- Griun_OMIRI-Rg.ttf              (차태윤 필체)
 
-주의:
-- Git LFS 포인터 파일이 아니라 실제 폰트 바이너리가 올라가야 합니다.
-- GitHub에서 파일을 눌렀을 때 수십~수백 바이트짜리 텍스트만 보이면 LFS 포인터일 수 있습니다.
-- 실제 폰트 파일의 이용 허가 및 웹/서버 배포 가능 여부는 직접 확인하세요.
+확인 방법: 배포 후 https://<도메인>/api/png 를 열면 fonts 항목이 전부 "ready" 여야 합니다.
+"missing" 이면 vercel.json 의 includeFiles 가 빠졌거나 폴더 위치가 다른 것입니다.

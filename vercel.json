@@ -1,18 +1,9 @@
 {
-  "$schema": "https://openapi.vercel.sh/vercel.json",
   "functions": {
     "api/png.js": {
-      "maxDuration": 15,
-      "includeFiles": "fontconfig/**"
+      "includeFiles": "{fonts,fontconfig}/**",
+      "memory": 2048,
+      "maxDuration": 30
     }
-  },
-  "headers": [
-    {
-      "source": "/api/png",
-      "headers": [
-        { "key": "X-Content-Type-Options", "value": "nosniff" },
-        { "key": "Referrer-Policy", "value": "no-referrer" }
-      ]
-    }
-  ]
+  }
 }

@@ -1,358 +1,189 @@
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
-
-/*
- * WNF SVG → PNG 변환기
- * - 기본 UI: Pretendard Regular/Bold
- * - 일기/편지: 백시현·이안·차태윤 전용 필체
- * - 폰트 파일은 프로젝트 루트의 fontconfig/ 폴더에서 fontconfig로 로드
+/* wnf SVG → PNG 래스터 함수 (Vercel Node · sharp/libvips+pango)
+ * /api/png?u=<sj1.uk SVG 위젯 URL>
+ *
+ * 천악(awd-png)에서 실제로 동작 중인 구조를 그대로 따른다.
+ *   · CommonJS + (req, res) 핸들러  ← Vercel Node 런타임이 인식하는 유일한 형태
+ *   · fontconfig 경로를 sharp 로드 전에 지정
+ *   · CSS 주입 대신 '리태깅' — SVG 안의 font-family 문자열을 정확한 패밀리명으로
+ *     통째로 갈아끼운다. librsvg의 CSS 우선순위 해석에 기대지 않아 확실하다.
+ *
+ * 폰트 매핑
+ *   기본 UI 전부            = Pretendard
+ *   백시현 일기·편지 본문   = Kim jung chul Script
+ *   이안 일기·편지 본문     = 송암 이형식
+ *   차태윤 일기·편지 본문   = Griun OMIRI
+ *   ⓤ 일기·편지 본문       = Pretendard
  */
 
-const ROOT_DIR = fileURLToPath(new URL("../", import.meta.url));
-const FONT_DIR = path.join(ROOT_DIR, "fontconfig");
-const FONT_CONFIG_FILE = path.join(FONT_DIR, "fonts.conf");
+const path = require("path");
+const fs = require("fs");
 
-// sharp가 처음 로드되기 전에 fontconfig 경로를 반드시 지정해야 한다.
-process.env.FONTCONFIG_FILE = FONT_CONFIG_FILE;
+/* sharp가 처음 로드되기 전에 지정해야 한다. */
+const FONT_DIR = path.join(process.cwd(), "fontconfig");
 process.env.FONTCONFIG_PATH = FONT_DIR;
-process.env.XDG_CACHE_HOME ||= "/tmp";
-process.env.PANGOCAIRO_BACKEND ||= "fontconfig";
-process.env.LANG ||= "ko_KR.UTF-8";
-process.env.LC_ALL ||= "ko_KR.UTF-8";
+process.env.FONTCONFIG_FILE = path.join(FONT_DIR, "fonts.conf");
+process.env.XDG_CACHE_HOME = process.env.XDG_CACHE_HOME || "/tmp";
+process.env.PANGOCAIRO_BACKEND = process.env.PANGOCAIRO_BACKEND || "fontconfig";
 
-const DEFAULT_ALLOWED_HOSTS = ["sj1.uk"];
-const MAX_SOURCE_BYTES = 4 * 1024 * 1024;
-const DEFAULT_TARGET_WIDTH = 1680;
-const FETCH_TIMEOUT_MS = 10_000;
+const sharp = require("sharp");
 
-const FAMILY = Object.freeze({
-  DEFAULT: "WNF Pretendard",
-  SIHYUN: "WNF Sihyun Script",
-  IAN: "WNF Ian Script",
-  TAEYUN: "WNF Taeyun Script",
-});
+/* 앞 = fonts.conf가 붙여주는 고정 이름 · 뒤 = 폰트 파일 안의 실제 패밀리명.
+ * 재명명이 걸리든 안 걸리든 둘 중 하나로 잡히도록 스택으로 쓴다. */
+const UI = "'WNF Pretendard','Pretendard'";
+const HAND = {
+  "1": "'WNF Sihyun Script','Kim jung chul Script'",
+  "2": "'WNF Ian Script','송암 이형식'",
+  "3": "'WNF Taeyun Script','Griun OMIRI'",
+};
 
-const CHARACTER_FAMILY = Object.freeze({
-  "1": FAMILY.SIHYUN,
-  "2": FAMILY.IAN,
-  "3": FAMILY.TAEYUN,
-});
+const FONT_FILES = {
+  "Pretendard Regular": ["Pretendard-Regular.otf", "pretendard-Regular.otf"],
+  "Pretendard Bold": ["Pretendard-Bold.otf", "pretendard-Bold.otf"],
+  "백시현 필체": ["KimjungchulScript-Regular.ttf"],
+  "이안 필체": ["songam_leehyungsik.ttf"],
+  "차태윤 필체": ["Griun_OMIRI-Rg.ttf"],
+};
 
-const FONT_FILES = Object.freeze({
-  pretendardRegular: ["Pretendard-Regular.otf", "pretendard-Regular.otf"],
-  pretendardBold: ["Pretendard-Bold.otf", "pretendard-Bold.otf"],
-  ian: ["songam_leehyungsik.ttf"],
-  sihyun: ["KimjungchulScript-Regular.ttf"],
-  taeyun: ["Griun_OMIRI-Rg.ttf"],
-});
+/* 폰트를 fontconfig/ 또는 fonts/ 어느 쪽에 넣어도 찾는다. */
+const FONT_DIRS = [FONT_DIR, path.join(process.cwd(), "fonts")];
 
-let sharpPromise;
-function getSharp() {
-  if (!sharpPromise) {
-    sharpPromise = import("sharp").then((module) => module.default);
-  }
-  return sharpPromise;
-}
-
-function json(data, status = 200) {
-  return new Response(JSON.stringify(data, null, 2), {
-    status,
-    headers: {
-      "Content-Type": "application/json; charset=utf-8",
-      "Cache-Control": "no-store",
-      "X-Content-Type-Options": "nosniff",
-    },
-  });
-}
-
-function allowedHosts() {
-  const custom = String(process.env.ALLOWED_HOSTS || "")
-    .split(",")
-    .map((host) => host.trim().toLowerCase())
-    .filter(Boolean);
-  return new Set(custom.length ? custom : DEFAULT_ALLOWED_HOSTS);
-}
-
-function targetWidth() {
-  const parsed = Number.parseInt(process.env.TARGET_WIDTH || "", 10);
-  if (!Number.isFinite(parsed)) return DEFAULT_TARGET_WIDTH;
-  return Math.min(3000, Math.max(420, parsed));
-}
-
-function xmlEscape(value) {
-  return String(value)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&apos;");
-}
-
-function decodeLoose(value) {
-  let output = String(value || "");
-  for (let i = 0; i < 3; i += 1) {
-    try {
-      const decoded = decodeURIComponent(output);
-      if (decoded === output) break;
-      output = decoded;
-    } catch {
-      break;
+function findFont(names) {
+  for (const dir of FONT_DIRS) {
+    for (const name of names) {
+      const full = path.join(dir, name);
+      try {
+        const stat = fs.statSync(full);
+        if (!stat.isFile()) continue;
+        const head = fs.readFileSync(full).subarray(0, 45).toString("utf8");
+        if (head.startsWith("version https://git-lfs.github.com")) {
+          return { name, dir, status: "git_lfs_pointer", bytes: stat.size };
+        }
+        return { name, dir, status: "ready", bytes: stat.size };
+      } catch (e) { /* 다음 후보 */ }
     }
   }
-  return output;
+  return { name: names.join(" 또는 "), status: "missing" };
 }
 
-function routeKind(sourceUrl) {
-  const pathname = decodeLoose(sourceUrl.pathname).toLowerCase();
-  if (pathname.includes("일기") || pathname.includes("diary")) return "diary";
-  if (pathname.includes("편지") || pathname.includes("letter") || pathname.includes("mail")) return "letter";
-  return "default";
+function inventory() {
+  const out = {};
+  for (const [label, names] of Object.entries(FONT_FILES)) out[label] = findFont(names);
+  return out;
 }
 
-function nameToCode(value) {
-  const text = decodeLoose(value);
-  if (text.includes("백시현") || text.includes("시현")) return "1";
-  if (text.includes("이안")) return "2";
-  if (text.includes("차태윤") || text.includes("태윤")) return "3";
+function decodeLoose(v) {
+  let s = String(v || "");
+  for (let i = 0; i < 3; i++) {
+    try { const d = decodeURIComponent(s); if (d === s) break; s = d; } catch (e) { break; }
+  }
+  return s;
+}
+
+function nameToCode(v) {
+  const t = decodeLoose(v);
+  if (/백시현|시현/.test(t)) return "1";
+  if (/이안/.test(t)) return "2";
+  if (/차태윤|태윤/.test(t)) return "3";
   return "";
 }
 
-function diaryCharacterCode(sourceUrl) {
-  for (const key of ["c", "code", "who"]) {
-    const value = String(sourceUrl.searchParams.get(key) || "").trim();
-    if (/^[123]$/.test(value)) return value;
-    const named = nameToCode(value);
-    if (named) return named;
-  }
-  return nameToCode(sourceUrl.pathname);
-}
-
-function letterCharacterCode(sourceUrl) {
-  for (const key of ["w", "from", "sender", "author"]) {
-    const named = nameToCode(sourceUrl.searchParams.get(key) || "");
-    if (named) return named;
-  }
-  return nameToCode(sourceUrl.pathname);
-}
-
-function characterFamily(sourceUrl, kind) {
-  const code = kind === "diary"
-    ? diaryCharacterCode(sourceUrl)
-    : kind === "letter"
-      ? letterCharacterCode(sourceUrl)
-      : "";
-  return CHARACTER_FAMILY[code] || "";
-}
-
-function injectFontCss(svgBuffer, sourceUrl) {
-  let svg = svgBuffer.toString("utf8");
-
-  // 서버 래스터화에서는 외부 Google Fonts가 필요 없고 로드도 불안정하므로 제거한다.
-  svg = svg.replace(/@import\s+url\([^;]+;?/gi, "");
-
-  const kind = routeKind(sourceUrl);
-  const scriptFamily = characterFamily(sourceUrl, kind);
-
-  const rules = [
-    `text{font-family:'${FAMILY.DEFAULT}' !important;}`,
-  ];
-
-  if (kind === "diary" && scriptFamily) {
-    rules.push(
-      `.hw{font-family:'${scriptFamily}' !important;font-weight:400 !important;font-style:normal !important;}`,
-    );
-  }
-
-  if (kind === "letter" && scriptFamily) {
-    rules.push(
-      `.lt,.rcp,.frm{font-family:'${scriptFamily}' !important;font-weight:400 !important;font-style:normal !important;}`,
-    );
-  }
-
-  const marker = `<style id="wnf-font-map">${rules.join("")}</style>`;
-  if (/<\/svg\s*>/i.test(svg)) {
-    svg = svg.replace(/<\/svg\s*>/i, `${marker}</svg>`);
-  } else {
-    throw new Error("원본 SVG에 닫는 svg 태그가 없습니다");
-  }
-
-  return Buffer.from(svg, "utf8");
-}
-
-function inspectFile(filePath) {
+/* 경로·파라미터에서 '지금 이 글을 쓴 사람'을 뽑는다. */
+function pickHand(u) {
+  let route = "", q = new URLSearchParams();
   try {
-    const stat = fs.statSync(filePath);
-    if (!stat.isFile()) return { status: "not_file" };
-    const head = fs.readFileSync(filePath).subarray(0, 80).toString("utf8");
-    if (head.startsWith("version https://git-lfs.github.com/spec/v1")) {
-      return { status: "git_lfs_pointer", bytes: stat.size };
+    const url = new URL(u);
+    route = decodeLoose(url.pathname.split("/").pop() || "");
+    q = url.searchParams;
+  } catch (e) { return { hand: "", kind: "default" }; }
+
+  const isDiary = /일기|diary/.test(route);
+  const isLetter = /편지|letter|mail/.test(route);
+  if (!isDiary && !isLetter) return { hand: "", kind: "default" };
+
+  const seg = route.replace(/^(일기|편지|diary|letter|mail)/, "");
+  let code = nameToCode(seg);
+  if (!code) {
+    for (const k of isDiary ? ["c", "code", "who"] : ["w", "from", "sender", "author"]) {
+      const v = String(q.get(k) || "").trim();
+      if (isDiary && /^[123]$/.test(v)) { code = v; break; }
+      const named = nameToCode(v);
+      if (named) { code = named; break; }
     }
-    return { status: "ready", bytes: stat.size };
-  } catch {
-    return { status: "missing" };
   }
+  /* 편지는 발신인을 못 찾으면 수신인(t) 기준으로 종이 테마가 정해지므로 같이 본다. */
+  if (!code && isLetter) code = nameToCode(q.get("t") || "");
+  if (q.get("c") === "0" || q.get("uname")) code = "";   // ⓤ 본인 = 기본 폰트
+
+  return { hand: HAND[code] || "", kind: isDiary ? "diary" : "letter" };
 }
 
-function fontInventory() {
-  const result = {};
-  for (const [role, candidates] of Object.entries(FONT_FILES)) {
-    const found = candidates
-      .map((name) => ({ name, ...inspectFile(path.join(FONT_DIR, name)) }))
-      .find((item) => item.status !== "missing");
-    result[role] = found || { name: candidates.join(" OR "), status: "missing" };
-  }
-  return result;
+/* SVG 안의 모든 font-family 선언을 실제 패밀리명으로 갈아끼운다. */
+function retag(svg, hand) {
+  svg = svg.replace(/(<svg[^>]*?)\s+style="[^"]*"/, "$1");
+
+  const decide = (value) => {
+    const v = String(value);
+    /* 워커가 이미 캐릭터를 지목해 보낸 경우 — 그대로 존중한다. */
+    if (/WNF Sihyun|Kim ?jung ?chul/i.test(v)) return HAND["1"];
+    if (/WNF Ian|송암/i.test(v)) return HAND["2"];
+    if (/WNF Taeyun|Griun/i.test(v)) return HAND["3"];
+    /* 편지의 To.·from. 처럼 명조 계열로 남은 자리 = 그 편지 주인의 필체 */
+    if (hand && /batang|myungjo|(^|[^-])serif/i.test(v) && !/sans-serif/i.test(v)) return hand;
+    return UI;
+  };
+
+  return svg
+    .replace(/font-family\s*:\s*([^;}"<]+)/g, (m, v) => "font-family:" + decide(v))
+    .replace(/font-family\s*=\s*"([^"]*)"/g, (m, v) => 'font-family="' + decide(v).replace(/"/g, "") + '"');
 }
 
-function assertFontsReady() {
-  if (!fs.existsSync(FONT_CONFIG_FILE)) {
-    throw new Error("fontconfig/fonts.conf 파일이 없습니다");
-  }
-
-  const inventory = fontInventory();
-  const failed = Object.entries(inventory)
-    .filter(([, info]) => info.status !== "ready")
-    .map(([role, info]) => `${role}: ${info.name} (${info.status})`);
-
-  if (failed.length) {
-    throw new Error(`폰트 파일 점검 실패 — ${failed.join(", ")}`);
-  }
-}
-
-async function fetchSvg(sourceUrl) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-
+module.exports = async (req, res) => {
   try {
-    const response = await fetch(sourceUrl, {
-      method: "GET",
-      redirect: "manual",
-      signal: controller.signal,
-      headers: {
-        Accept: "image/svg+xml",
-        "User-Agent": "wnf-png-vercel-fonts/2.0",
-      },
-    });
+    const u = String((req.query && req.query.u) || "");
 
-    if (!response.ok) {
-      throw new Error(`원본 SVG 응답 실패: HTTP ${response.status}`);
+    /* u 없이 열면 진단 정보 — 폰트가 실제로 배포에 실렸는지 여기서 확인한다. */
+    if (!u) {
+      res.setHeader("Content-Type", "application/json; charset=utf-8");
+      res.setHeader("Cache-Control", "no-store");
+      res.status(200).send(JSON.stringify({
+        ok: true,
+        service: "wnf-png",
+        usage: "/api/png?u=<sj1.uk SVG URL>",
+        cwd: process.cwd(),
+        fontConfig: fs.existsSync(process.env.FONTCONFIG_FILE) ? "ready" : "missing",
+        fontDirs: FONT_DIRS,
+        fonts: inventory(),
+      }, null, 2));
+      return;
     }
 
-    const contentType = (response.headers.get("content-type") || "").toLowerCase();
-    if (!contentType.includes("image/svg+xml")) {
-      throw new Error(`SVG가 아닌 응답입니다: ${contentType || "content-type 없음"}`);
+    if (!/^https:\/\/sj1\.uk\//.test(u)) { res.status(400).send("bad url"); return; }
+
+    const missing = Object.entries(inventory()).filter(([, v]) => v.status !== "ready");
+    if (missing.length) {
+      res.status(502).send("font missing: " + missing.map(([k, v]) => k + "(" + v.status + ")").join(", "));
+      return;
     }
 
-    const declaredLength = Number(response.headers.get("content-length") || 0);
-    if (declaredLength > MAX_SOURCE_BYTES) {
-      throw new Error("원본 SVG가 허용 크기를 초과했습니다");
-    }
+    /* 워커의 PNG 변환 루프를 막는 원본 SVG 출구 */
+    const src = u + (u.includes("?") ? "&" : "?") + "svg=1";
+    const r = await fetch(src, { headers: { "User-Agent": "wnf-raster/1.0" } });
+    if (!r.ok) { res.status(502).send("origin " + r.status); return; }
 
-    const input = Buffer.from(await response.arrayBuffer());
-    if (!input.length || input.length > MAX_SOURCE_BYTES) {
-      throw new Error("원본 SVG 크기가 비정상입니다");
-    }
-    return input;
-  } finally {
-    clearTimeout(timer);
+    const { hand, kind } = pickHand(u);
+    const svg = retag(await r.text(), hand);
+
+    const png = await sharp(Buffer.from(svg), { density: 384 })
+      .resize({ width: 1680 })
+      .png({ compressionLevel: 9 })
+      .toBuffer();
+
+    res.setHeader("Content-Type", "image/png");
+    res.setHeader("Cache-Control", "public, max-age=600, s-maxage=3600");
+    res.setHeader("X-WNF-Route", kind);
+    res.setHeader("X-WNF-Font", (hand || UI).replace(/'/g, ""));
+    res.status(200).send(png);
+  } catch (e) {
+    res.status(500).send("render error: " + (e && e.message));
   }
-}
-
-export default {
-  async fetch(request) {
-    if (request.method !== "GET" && request.method !== "HEAD") {
-      return json({ error: "GET 또는 HEAD만 지원합니다" }, 405);
-    }
-
-    try {
-      const requestUrl = new URL(request.url);
-      const rawSource = requestUrl.searchParams.get("u");
-
-      if (!rawSource) {
-        return json({
-          ok: true,
-          service: "wnf-png-vercel-fonts",
-          usage: "/api/png?u=https%3A%2F%2Fsj1.uk%2F폰%3F...%26svg%3D1",
-          allowedHosts: [...allowedHosts()],
-          targetWidth: targetWidth(),
-          fontConfig: fs.existsSync(FONT_CONFIG_FILE) ? "ready" : "missing",
-          fonts: fontInventory(),
-          mapping: {
-            default: FAMILY.DEFAULT,
-            diaryAndLetter: {
-              "1 / 백시현": FAMILY.SIHYUN,
-              "2 / 이안": FAMILY.IAN,
-              "3 / 차태윤": FAMILY.TAEYUN,
-            },
-          },
-        });
-      }
-
-      let sourceUrl;
-      try {
-        sourceUrl = new URL(rawSource);
-      } catch {
-        return json({ error: "u 파라미터가 올바른 URL이 아닙니다" }, 400);
-      }
-
-      if (sourceUrl.protocol !== "https:") {
-        return json({ error: "HTTPS 원본만 허용합니다" }, 400);
-      }
-      if (sourceUrl.username || sourceUrl.password || (sourceUrl.port && sourceUrl.port !== "443")) {
-        return json({ error: "인증정보 또는 비표준 포트가 있는 URL은 허용하지 않습니다" }, 400);
-      }
-      if (!allowedHosts().has(sourceUrl.hostname.toLowerCase())) {
-        return json({ error: `허용되지 않은 원본 도메인: ${sourceUrl.hostname}` }, 403);
-      }
-
-      assertFontsReady();
-
-      // Cloudflare Worker의 PNG 변환 루프를 막는 원본 SVG 출구.
-      sourceUrl.searchParams.set("svg", "1");
-
-      const rawSvg = await fetchSvg(sourceUrl);
-      const svg = injectFontCss(rawSvg, sourceUrl);
-      const sharp = await getSharp();
-
-      const png = await sharp(svg, {
-        density: 288,
-        failOn: "warning",
-        limitInputPixels: 100_000_000,
-      })
-        .resize({
-          width: targetWidth(),
-          fit: "inside",
-          withoutEnlargement: false,
-        })
-        .png({
-          compressionLevel: 9,
-          adaptiveFiltering: true,
-        })
-        .toBuffer();
-
-      const kind = routeKind(sourceUrl);
-      const selectedFamily = characterFamily(sourceUrl, kind) || FAMILY.DEFAULT;
-      const headers = {
-        "Content-Type": "image/png",
-        "Content-Length": String(png.length),
-        "Cache-Control": "public, max-age=300, s-maxage=86400, stale-while-revalidate=604800",
-        "X-Content-Type-Options": "nosniff",
-        "X-WNF-Source": sourceUrl.hostname,
-        "X-WNF-Font": selectedFamily,
-        "X-WNF-Route": kind,
-      };
-
-      if (request.method === "HEAD") {
-        return new Response(null, { status: 200, headers });
-      }
-      return new Response(png, { status: 200, headers });
-    } catch (error) {
-      const message = error?.name === "AbortError"
-        ? "원본 SVG 요청 시간이 초과되었습니다"
-        : String(error?.message || error);
-      console.error("PNG conversion failed:", error);
-      return json({ error: message, fonts: fontInventory() }, 502);
-    }
-  },
 };
